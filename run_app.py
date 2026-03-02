@@ -48,6 +48,25 @@ def save_apps(apps_path: Path, apps: list[dict]) -> None:
         json.dump(apps, f, indent=2)
 
 
+def load_state(state_path: Path) -> Optional[dict]:
+    if not state_path.exists():
+        return None
+    try:
+        with open(state_path, encoding="utf-8") as f:
+            data = json.load(f)
+        app = data.get("last_app")
+        if app and isinstance(app, dict) and "name" in app and "directory" in app and "command" in app:
+            return app
+    except (json.JSONDecodeError, OSError):
+        pass
+    return None
+
+
+def save_state(state_path: Path, app: dict) -> None:
+    with open(state_path, "w", encoding="utf-8") as f:
+        json.dump({"last_app": app}, f, indent=2)
+
+
 def clear_screen() -> None:
     print("\033[2J\033[H", end="", flush=True)
 
@@ -61,10 +80,19 @@ _MENU_STYLE = questionary.Style([
     ("action", "italic dim"),
 ])
 
-def prompt_selection(apps: list[dict]) -> Optional[dict]:
-    choices = [
+def prompt_selection(apps: list[dict], last_app: Optional[dict]) -> Optional[dict]:
+    choices: list = []
+    if last_app:
+        choices.append(
+            questionary.Choice(
+                title=f"Start last program ({last_app['name']})",
+                value=last_app,
+            )
+        )
+    choices.extend([
         questionary.Choice(title=app["name"], value=app) for app in apps
-    ] + [
+    ])
+    choices.extend([
         Separator(),
         questionary.Choice(title=[("class:action", "Add An App")], value=_ADD_APP),
         questionary.Choice(
@@ -73,7 +101,7 @@ def prompt_selection(apps: list[dict]) -> Optional[dict]:
             disabled="No apps to remove" if not apps else None,
         ),
         questionary.Choice(title=[("class:action", "Exit")], value=_EXIT),
-    ]
+    ])
     result = questionary.select(
         "Select an app to run:",
         choices=choices,
@@ -154,12 +182,15 @@ def remove_app(apps_path: Path, apps: list[dict]) -> list[dict]:
 
 
 def main() -> int:
-    apps_path = Path(__file__).resolve().parent / "apps.json"
+    base_path = Path(__file__).resolve().parent
+    apps_path = base_path / "apps.json"
+    state_path = base_path / "state.json"
     apps = load_apps(apps_path)
+    last_app = load_state(state_path)
 
     while True:
         clear_screen()
-        selected = prompt_selection(apps)
+        selected = prompt_selection(apps, last_app)
         if selected is None:
             clear_screen()
             return 0
@@ -179,11 +210,30 @@ def main() -> int:
         print(f"\nRunning: {raw_cmd}")
         print(f"Working directory: {work_dir}\n")
 
-        script_path = Path(__file__).resolve().parent / "run_app.sh"
-        return subprocess.run(
+        script_path = base_path / "run_app.sh"
+        result = subprocess.run(
             ["bash", str(script_path), str(work_dir), raw_cmd],
         ).returncode
+        save_state(state_path, selected)
+        return result
+
+
+def run() -> int:
+    try:
+        return main()
+    except KeyboardInterrupt:
+        clear_screen()
+        return 130
+    except EOFError:
+        clear_screen()
+        return 0
+    except BrokenPipeError:
+        return 0
+    except OSError as e:
+        if e.errno == 5:
+            return 0
+        raise
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run())
